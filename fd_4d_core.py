@@ -215,6 +215,8 @@ def _substep_W(V, Pi, w, v, r, dw, dt_half, mu, d, u,
 
             # Policy iteration (Howard) for this (iv, ir) slice
             pi_slice = Pi[:, iv, ir].copy()
+            pi_slice[0]  = d   # boundary convention: match fd_solve (full(d))
+            pi_slice[-1] = d
             V_slice  = V_old[:, iv, ir].copy()
             rhs_base = (V_slice[1:Nw] + corr[1:Nw, iv, ir]).copy()
 
@@ -239,7 +241,7 @@ def _substep_W(V, Pi, w, v, r, dw, dt_half, mu, d, u,
                 V_new_s[Nw]  = 1.0
                 V_new_s[1:Nw] = V_int
 
-                sig2_scalar = vi
+                sig2_scalar = max(vi, 1e-14)  # guard: vi=0 degenerate node
                 pi_slice[1:Nw] = policy_from_V(V_new_s, wi, dw, eta, sig2_scalar, d, u)
 
                 if np.max(np.abs(pi_slice - pi_old_s)) < 1e-8:
@@ -247,6 +249,10 @@ def _substep_W(V, Pi, w, v, r, dw, dt_half, mu, d, u,
 
             V[:, iv, ir]  = V_new_s
             Pi[:, iv, ir] = pi_slice
+
+    # Neumann BC at v=0 (degenerate diffusion): copy from v[1] slice
+    V[:, 0, :]  = V[:, 1, :]
+    Pi[:, 0, :] = Pi[:, 1, :]
 
 
 # ── Main 4D solver ───────────────────────────────────────────────────────────
@@ -297,8 +303,12 @@ def fd_solve_4d(
     grid = Grid4D(Nw=Nw, Nv=Nv, Nr=Nr, Nt=Nt, T=T, A=A, v_max=v_max, r_max=r_max)
     w, v, r, dw, dv, dr, dt = grid.build()
 
-    # Terminal condition: V = 1{w >= goal}  (goal = goal_mult × w0 / w0 = goal_mult, normalised)
-    V = (w[:, None, None] / goal_mult >= 1.0).astype(float)
+    # Terminal condition: V = 1{w >= goal}, broadcast to full (Nw+1, Nv+1, Nr+1) shape.
+    # w[:, None, None] stays (Nw+1,1,1) — must explicitly broadcast and copy.
+    V = np.broadcast_to(
+        (w / goal_mult >= 1.0).astype(float)[:, None, None],
+        (Nw + 1, Nv + 1, Nr + 1),
+    ).copy()
     Pi = np.zeros((Nw + 1, Nv + 1, Nr + 1))
 
     if store_policy_path:
@@ -451,7 +461,10 @@ def fd_solve_4d_nd(
     grid = Grid4D(Nw=Nw, Nv=Nv, Nr=Nr, Nt=Nt, T=T, A=A, v_max=v_max, r_max=r_max)
     w, v, r, dw, dv, dr, dt = grid.build()
 
-    V  = (w[:, None, None] / goal_mult >= 1.0).astype(float)
+    V = np.broadcast_to(
+        (w / goal_mult >= 1.0).astype(float)[:, None, None],
+        (Nw + 1, Nv + 1, Nr + 1),
+    ).copy()
     Pi = np.zeros((Nw + 1, Nv + 1, Nr + 1, n))
 
     if store_policy_path:
