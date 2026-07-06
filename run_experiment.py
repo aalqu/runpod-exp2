@@ -622,9 +622,10 @@ def run_all(config, device=None, resume=False, compile_model=False):
         #
         # The result dict is shallow-copied per seed with only the "seed" field
         # updated so that downstream groupby(["method","n_assets","seed"]) works.
-        fd_cache      = {}   # gm → result dict (seed-agnostic)
-        fd_sv_cache   = {}   # gm → result dict (seed-agnostic, fd_sv method)
-        merton_cache  = {}   # gm → result dict (seed-agnostic)
+        fd_cache         = {}   # gm → result dict (seed-agnostic)
+        fd_sv_cache      = {}   # gm → result dict (seed-agnostic, fd_sv method)
+        fd_sv_nd_cache   = {}   # gm → result dict (seed-agnostic, fd_sv_nd method)
+        merton_cache     = {}   # gm → result dict (seed-agnostic)
 
         for gm in goal_multipliers:
             cfg_gm = copy.copy(config)
@@ -730,6 +731,86 @@ def run_all(config, device=None, resume=False, compile_model=False):
                         print(f"FAILED: {exc}")
                         traceback.print_exc()
 
+            # ── fd_sv_nd: 4D HJB with factor vol (multi-asset, n > 1) ────────
+            if n > 1 and getattr(config, 'include_fd_sv', True):
+                _ck = _ckpt_path(config.results_dir, "fd_sv_nd", n, 0, gm)
+                if resume and _ck.exists():
+                    print(f"  [fd_sv_nd n={n} goal={gm:.2f}] skipped (checkpoint exists)")
+                else:
+                    print(f"  [fd_sv_nd n={n} goal={gm:.2f}] solving 4D HJB (factor vol) ...",
+                          end=" ", flush=True)
+                    t0 = time.perf_counter()
+                    try:
+                        from fd_4d_core import (
+                            fd_solve_4d_nd, make_fd_policy_4d_time_aware_nd,
+                            evaluate_policy_mc_4d_nd,
+                        )
+                        mu_vec_nd = np.asarray(mkt.mu_ann, float)
+                        C_mat_nd  = np.asarray(mkt.omega, float) / float(FD4D_PARAMS["theta_v"])
+                        r0_nd     = float(mkt.r)
+                        v0_nd     = float(FD4D_PARAMS["theta_v"])
+
+                        w_g, v_g, r_g, V_g, Pi_g, Pi_path_nd, tau_path_nd = fd_solve_4d_nd(
+                            mu_vec=mu_vec_nd, C_mat=C_mat_nd,
+                            r0=r0_nd, v0=v0_nd,
+                            T=T_horizon, goal_mult=gm, w0=1.0,
+                            store_policy_path=True,
+                            **FD4D_PARAMS,
+                        )
+                        policy_sv_nd = make_fd_policy_4d_time_aware_nd(
+                            w_g, v_g, r_g, Pi_path_nd, tau_path_nd,
+                        )
+                        mc_nd = evaluate_policy_mc_4d_nd(
+                            policy_fn=policy_sv_nd,
+                            mu_vec=mu_vec_nd, C_mat=C_mat_nd,
+                            r0=r0_nd, v0=v0_nd,
+                            T=T_horizon, w0=1.0, goal_mult=gm,
+                            **{k: FD4D_PARAMS[k] for k in (
+                                "kappa_v", "theta_v", "xi_v",
+                                "kappa_r", "theta_r", "xi_r",
+                                "rho_Wv",  "rho_Wr",  "rho_vr",
+                            )},
+                            n_paths=4000, n_steps=252, seed=0,
+                        )
+                        elapsed_nd = time.perf_counter() - t0
+                        print(f"done ({elapsed_nd:.1f}s)  "
+                              f"mc_P(goal)={mc_nd['goal_probability']:.3f}")
+                        res_sv_nd = dict(
+                            method_family       = "fd",
+                            method_name         = "fd_sv_nd",
+                            method              = "fd_sv_nd",
+                            n_assets            = n,
+                            seed                = 0,
+                            goal_mult           = gm,
+                            r0                  = r0_nd,
+                            v0                  = v0_nd,
+                            train_time_sec      = elapsed_nd,
+                            solve_time_sec      = elapsed_nd,
+                            eval_time_sec       = 0.0,
+                            mc_goal_prob        = mc_nd["goal_probability"],
+                            mean_wealth         = mc_nd["mean_wealth"],
+                            median_wealth       = mc_nd["median_wealth"],
+                            wealth_p05          = mc_nd["wealth_p05"],
+                            wealth_p95          = mc_nd["wealth_p95"],
+                            max_drawdown_mean   = mc_nd["max_drawdown_mean"],
+                            initial_wealth      = 1.0,
+                            target_wealth       = gm,
+                            wealth_path         = [],
+                            weight_path         = [],
+                            terminal_wealth     = [],
+                            goal_hit            = [mc_nd["goal_probability"] >= 0.5],
+                            gross_leverage_path = [],
+                            net_exposure_path   = [],
+                            concentration_path  = [],
+                            drawdown_path       = [],
+                        )
+                        fd_sv_nd_cache[gm] = res_sv_nd
+                        _save_ckpt(config.results_dir, res_sv_nd, n, 0, gm)
+                    except Exception as exc:
+                        import traceback
+                        print(f"FAILED: {exc}")
+                        traceback.print_exc()
+
             if config.include_merton_benchmark:
                 _ck = _ckpt_path(config.results_dir, "merton", n, 0, gm)
                 if resume and _ck.exists():
@@ -790,6 +871,11 @@ def run_all(config, device=None, resume=False, compile_model=False):
                     res_sv_s = {**fd_sv_cache[gm], "seed": seed}
                     results.append(res_sv_s)
                     _save_ckpt(config.results_dir, res_sv_s, n, seed, gm)
+
+                if gm in fd_sv_nd_cache:
+                    res_sv_nd_s = {**fd_sv_nd_cache[gm], "seed": seed}
+                    results.append(res_sv_nd_s)
+                    _save_ckpt(config.results_dir, res_sv_nd_s, n, seed, gm)
 
                 if gm in merton_cache:
                     res_m = {**merton_cache[gm], "seed": seed}

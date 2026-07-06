@@ -544,6 +544,44 @@ def make_fd_policy_4d_time_aware(w_grid, v_grid, r_grid, Pi_path, tau_path,
     return policy
 
 
+def make_fd_policy_4d_time_aware_nd(w_grid, v_grid, r_grid, Pi_path, tau_path,
+                                     d=-5.0, u=3.0):
+    """
+    4D (τ, w, v, r) policy lookup for n-asset factor-vol case.
+    Pi_path : (Nt, Nw+1, Nv+1, Nr+1, n_assets).
+    tau_path: (Nt,) monotonically increasing.
+    Returns callable policy(w_norm, v, r, tau) -> (N, n_assets).
+    """
+    from scipy.interpolate import RegularGridInterpolator
+    n_assets = Pi_path.shape[-1]
+    interps = [
+        RegularGridInterpolator(
+            (tau_path, w_grid, v_grid, r_grid), Pi_path[..., i],
+            method='linear', bounds_error=False, fill_value=None,
+        )
+        for i in range(n_assets)
+    ]
+
+    def policy(w_norm, v, r, tau):
+        tau_c = float(np.clip(float(tau), tau_path[0], tau_path[-1]))
+        w_arr = np.atleast_1d(np.asarray(w_norm, float))
+        v_arr = np.atleast_1d(np.asarray(v,      float))
+        r_arr = np.atleast_1d(np.asarray(r,      float))
+        N     = max(len(w_arr), len(v_arr), len(r_arr))
+        pts   = np.column_stack([
+            np.full(N, tau_c),
+            np.broadcast_to(w_arr, (N,)),
+            np.broadcast_to(v_arr, (N,)),
+            np.broadcast_to(r_arr, (N,)),
+        ])
+        return np.clip(
+            np.column_stack([interp(pts) for interp in interps]),
+            d, u,
+        )  # (N, n_assets)
+
+    return policy
+
+
 # ── Monte-Carlo evaluation ────────────────────────────────────────────────────
 
 def evaluate_policy_mc_4d(
@@ -618,6 +656,94 @@ def evaluate_policy_mc_4d(
         r = np.maximum(r_new, 0.0)
 
         # Track drawdown
+        peak_W = np.maximum(peak_W, W)
+        dd     = (peak_W - W) / peak_W
+        max_dd = np.maximum(max_dd, dd)
+
+    return dict(
+        goal_probability  = float(np.mean(W >= goal)),
+        mean_wealth       = float(np.mean(W)),
+        median_wealth     = float(np.median(W)),
+        wealth_p05        = float(np.percentile(W,  5)),
+        wealth_p25        = float(np.percentile(W, 25)),
+        wealth_p75        = float(np.percentile(W, 75)),
+        wealth_p95        = float(np.percentile(W, 95)),
+        max_drawdown_mean = float(np.mean(max_dd)),
+    )
+
+
+def evaluate_policy_mc_4d_nd(
+    policy_fn,
+    mu_vec, C_mat, r0, v0, T, w0, goal_mult,
+    kappa_v, theta_v, xi_v,
+    kappa_r, theta_r, xi_r,
+    rho_Wv=0.0, rho_Wr=0.0, rho_vr=0.0,
+    n_paths=4000, n_steps=252, seed=1,
+    d=-5.0, u=3.0,
+):
+    """
+    Simulate joint (W, v, r) paths under n-asset policy_fn with factor vol
+    model Ω(v) = v · C_mat.  Portfolio variance = v · π^T C π.
+
+    policy_fn(w_norm, v, r, tau) -> (n_paths, n_assets) weights.
+    """
+    mu_vec = np.asarray(mu_vec, float)
+    C_mat  = np.asarray(C_mat,  float)
+    n      = len(mu_vec)
+
+    rng  = np.random.default_rng(seed)
+    dt   = T / n_steps
+    goal = goal_mult * w0
+
+    Corr = np.array([
+        [1.0,    rho_Wv, rho_Wr],
+        [rho_Wv, 1.0,    rho_vr],
+        [rho_Wr, rho_vr, 1.0   ],
+    ])
+    Corr += 1e-8 * np.eye(3)
+    L = np.linalg.cholesky(Corr)
+
+    W      = np.full(n_paths, float(w0))
+    v      = np.full(n_paths, float(v0))
+    r      = np.full(n_paths, float(r0))
+    peak_W = W.copy()
+    max_dd = np.zeros(n_paths)
+
+    for step in range(n_steps):
+        tau = T - step * dt
+
+        Z_ind = rng.standard_normal((n_paths, 3))
+        Z_cor = Z_ind @ L.T
+        Z_W   = Z_cor[:, 0]
+        Z_v   = Z_cor[:, 1]
+        Z_r   = Z_cor[:, 2]
+
+        w_norm = W / goal
+        pi     = np.asarray(policy_fn(w_norm, v, r, tau), dtype=float)
+        pi     = pi.reshape(n_paths, n)
+
+        # Portfolio variance under factor vol: v · π^T C π
+        port_var = v * np.einsum('bi,ij,bj->b', pi, C_mat, pi)
+        port_var = np.maximum(port_var, 0.0)
+        sigma_t  = np.sqrt(port_var)
+
+        # Excess drift: π^T (μ - r·1)
+        excess_drift = (pi * (mu_vec[None, :] - r[:, None])).sum(axis=1)
+
+        dW_log = (r + excess_drift - 0.5 * port_var) * dt + sigma_t * math.sqrt(dt) * Z_W
+        W      = W * np.exp(dW_log)
+        W      = np.maximum(W, 1e-12)
+
+        v_new = (v + kappa_v * (theta_v - v) * dt
+                   + xi_v * np.sqrt(np.maximum(v, 0.0)) * math.sqrt(dt) * Z_v
+                   + 0.25 * xi_v**2 * dt * (Z_v**2 - 1.0))
+        v = np.maximum(v_new, 0.0)
+
+        r_new = (r + kappa_r * (theta_r - r) * dt
+                   + xi_r * np.sqrt(np.maximum(r, 0.0)) * math.sqrt(dt) * Z_r
+                   + 0.25 * xi_r**2 * dt * (Z_r**2 - 1.0))
+        r = np.maximum(r_new, 0.0)
+
         peak_W = np.maximum(peak_W, W)
         dd     = (peak_W - W) / peak_W
         max_dd = np.maximum(max_dd, dd)
