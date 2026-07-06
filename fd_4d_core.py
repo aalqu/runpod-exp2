@@ -69,14 +69,16 @@ class Grid4D:
 
 def _cross_Wv(V, Pi, w, v, dw, dv, xi_v, rho_Wv, s):
     """
-    Explicit cross term:  −ρ_Wv · ξ_v · √v · π · v · W · V_Wv · s
+    Explicit cross term from Itô: σ_W σ_v ρ_Wv V_Wv
+      σ_W = π W √v,  σ_v = ξ_v √v  →  σ_W σ_v = π W ξ_v v
+    Correction: −ρ_Wv · ξ_v · v · π · W · V_Wv · s
     Returns correction array (Nw+1, Nv+1, Nr+1).
     """
     corr = np.zeros_like(V)
     Nr1  = V.shape[2]
     for iv in range(1, V.shape[1] - 1):
         vi = v[iv]
-        factor = s * rho_Wv * xi_v * math.sqrt(max(vi, 0.0)) * vi
+        factor = s * rho_Wv * xi_v * vi          # ξ_v · v  (NOT v^{3/2})
         for ir in range(Nr1):
             V_Wv = (V[2:, iv+1, ir] - V[2:, iv-1, ir]
                     - V[:-2, iv+1, ir] + V[:-2, iv-1, ir]) / (4.0 * dw * dv)
@@ -86,22 +88,20 @@ def _cross_Wv(V, Pi, w, v, dw, dv, xi_v, rho_Wv, s):
     return corr
 
 
-def _cross_Wr(V, Pi, w, r, dw, dr, xi_r, rho_Wr, s):
+def _cross_Wr(V, Pi, w, v, r, dw, dr, xi_r, rho_Wr, s):
     """
-    Explicit cross term:  −ρ_Wr · ξ_r · √r · π · √v · W · V_Wr · s
-    Note: the √v factor is absorbed into pi_int (user passes effective pi).
-    Per spec: −ρ_Wr · ξ_r · √r · π√v · W · V_Wr
-    Here we pass (Pi * sqrt(v)) already folded — callers pass Pi directly,
-    so we compute √vi separately from the current v grid.
+    Explicit cross term from Itô: σ_W σ_r ρ_Wr V_Wr
+      σ_W = π W √v,  σ_r = ξ_r √r  →  σ_W σ_r = π W ξ_r √(v·r)
+    Correction: −ρ_Wr · ξ_r · √(v·r) · π · W · V_Wr · s
     Returns correction array (Nw+1, Nv+1, Nr+1).
     """
     corr = np.zeros_like(V)
-    Nv1  = V.shape[1]
     for ir in range(1, V.shape[2] - 1):
         ri = r[ir]
-        factor = s * rho_Wr * xi_r * math.sqrt(max(ri, 0.0))
-        for iv in range(Nv1):
-            # Vi slice: cross in W and r
+        sqrt_r = math.sqrt(max(ri, 0.0))
+        for iv in range(V.shape[1]):
+            vi = v[iv]
+            factor = s * rho_Wr * xi_r * math.sqrt(max(vi, 0.0)) * sqrt_r  # ξ_r √(v·r)
             V_Wr = (V[2:, iv, ir+1] - V[2:, iv, ir-1]
                     - V[:-2, iv, ir+1] + V[:-2, iv, ir-1]) / (4.0 * dw * dr)
             w_int  = w[1:-1]
@@ -204,7 +204,7 @@ def _substep_W(V, Pi, w, v, r, dw, dt_half, mu, d, u,
 
     # Cross corrections added to RHS before the tridiagonal solve
     corr  = _cross_Wv(V_old, Pi, w, v, dw, dv, xi_v, rho_Wv, dt_half)
-    corr += _cross_Wr(V_old, Pi, w, r, dw, dr, xi_r, rho_Wr, dt_half)
+    corr += _cross_Wr(V_old, Pi, w, v, r, dw, dr, xi_r, rho_Wr, dt_half)
     corr += _cross_vr(V_old, v, r, dv, dr, xi_v, xi_r, rho_vr, dt_half)
 
     for iv in range(Nv1):
@@ -598,10 +598,11 @@ def evaluate_policy_mc_4d(
         w_norm  = W / goal
         pi      = np.clip(policy_fn(w_norm, v, r, tau), d, u)
 
-        # Wealth update (GBM)
+        # Wealth update — exact GBM step (Itô-corrected log-return)
         sigma_t = np.sqrt(np.maximum(v, 0.0))
-        dW_pct  = (r + pi * (mu - r)) * dt + pi * sigma_t * math.sqrt(dt) * Z_W
-        W       = W * (1.0 + dW_pct)
+        dW_log  = ((r + pi * (mu - r) - 0.5 * pi**2 * v) * dt
+                   + pi * sigma_t * math.sqrt(dt) * Z_W)
+        W       = W * np.exp(dW_log)
         W       = np.maximum(W, 1e-12)
 
         # Milstein CIR for v

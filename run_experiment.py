@@ -153,6 +153,7 @@ FD4D_PARAMS = dict(
     kappa_r = 0.50,   theta_r = 0.04,  xi_r = 0.10,
     rho_Wv  = -0.50,  rho_Wr  = 0.0,  rho_vr = 0.0,
     Nw = 80, Nv = 20, Nr = 15, Nt = 80,
+    A = 1.5,           # upper wealth boundary: user doesn't need W > 1.5×W₀
     v_max = 0.25,  r_max = 0.20,
 )
 
@@ -445,6 +446,45 @@ def _gbm_mc_eval(policy_fn, market_data, initial_wealth, target_multiplier,
     }
 
 
+def _sv_mc_eval_n1(policy_fn_2d, mkt, gm, n_paths=2000, seed=42, T_horizon=1.0):
+    """
+    Evaluate a scalar 2D policy (w_norm, tau) -> float under the stochastic
+    vol/rate CIR model (FD4D_PARAMS). Wraps it to (w_norm, v, r, tau); v and r
+    are visible to the simulation but the policy ignores them (unless it is fd_sv).
+    Only valid for n=1. Remaps output keys to match _gbm_mc_eval format.
+    """
+    from fd_4d_core import evaluate_policy_mc_4d
+
+    def _policy_4d(w_norm, v, r, tau):
+        return policy_fn_2d(w_norm, tau)
+
+    mu_1 = float(mkt.mu_ann[0])
+    r0   = float(mkt.r)
+    v0   = float(FD4D_PARAMS["theta_v"])
+
+    out = evaluate_policy_mc_4d(
+        policy_fn=_policy_4d,
+        mu=mu_1, r0=r0, v0=v0,
+        T=T_horizon, w0=1.0, goal_mult=gm,
+        **{k: FD4D_PARAMS[k] for k in (
+            "kappa_v", "theta_v", "xi_v",
+            "kappa_r", "theta_r", "xi_r",
+            "rho_Wv",  "rho_Wr",  "rho_vr",
+        )},
+        n_paths=n_paths, n_steps=252, seed=seed,
+    )
+    return {
+        "mc_goal_prob":      out["goal_probability"],
+        "mc_mean_wealth":    out["mean_wealth"],
+        "mc_median_wealth":  out["median_wealth"],
+        "mc_wealth_p05":     out["wealth_p05"],
+        "mc_wealth_p25":     out["wealth_p25"],
+        "mc_wealth_p75":     out["wealth_p75"],
+        "mc_wealth_p95":     out["wealth_p95"],
+        "max_drawdown_mean": out["max_drawdown_mean"],
+    }
+
+
 def _extract_policy_fn(result, market_data, config):
     """
     Reconstruct a policy_fn(w_norm, tau) -> weights callable from a result dict.
@@ -602,8 +642,12 @@ def run_all(config, device=None, resume=False, compile_model=False):
                     # MC evaluation under calibrated GBM (primary metric)
                     _pfn = _extract_policy_fn(res, mkt, cfg_gm)
                     if _pfn is not None:
-                        mc = _gbm_mc_eval(_pfn, mkt, 1.0, gm, n_mc=2000, seed=0,
-                                          T_horizon=T_horizon)
+                        if n == 1:
+                            mc = _sv_mc_eval_n1(_pfn, mkt, gm, n_paths=2000,
+                                                seed=0, T_horizon=T_horizon)
+                        else:
+                            mc = _gbm_mc_eval(_pfn, mkt, 1.0, gm, n_mc=2000,
+                                              seed=0, T_horizon=T_horizon)
                         res = {**res, **mc}
                     print(f"done ({time.perf_counter()-t0:.1f}s)  "
                           f"goal_hit={res['goal_hit'][0]}  "
@@ -621,18 +665,21 @@ def run_all(config, device=None, resume=False, compile_model=False):
                     t0 = time.perf_counter()
                     try:
                         from fd_4d_core import (
-                            fd_solve_4d, make_fd_policy_4d,
+                            fd_solve_4d, make_fd_policy_4d_time_aware,
                             evaluate_policy_mc_4d,
                         )
                         mu_1  = float(mkt.mu_ann[0])
                         r0_sv = float(mkt.r)
                         v0_sv = float(FD4D_PARAMS["theta_v"])
-                        w_g, v_g, r_g, V_g, Pi_g = fd_solve_4d(
+                        w_g, v_g, r_g, V_g, Pi_g, Pi_path, tau_path = fd_solve_4d(
                             mu=mu_1, r0=r0_sv, v0=v0_sv,
                             T=T_horizon, goal_mult=gm, w0=1.0,
+                            store_policy_path=True,
                             **FD4D_PARAMS,
                         )
-                        policy_sv = make_fd_policy_4d(w_g, v_g, r_g, Pi_g)
+                        policy_sv = make_fd_policy_4d_time_aware(
+                            w_g, v_g, r_g, Pi_path, tau_path,
+                        )
                         mc_sv = evaluate_policy_mc_4d(
                             policy_fn=policy_sv,
                             mu=mu_1, r0=r0_sv, v0=v0_sv,
@@ -690,7 +737,40 @@ def run_all(config, device=None, resume=False, compile_model=False):
                 else:
                     print(f"  [Merton n={n} goal={gm:.2f}] ...", end=" ", flush=True)
                     res = eval_merton(mkt, cfg_gm, initial_wealth=1.0, seed=0)
-                    print(f"done  goal_hit={res['goal_hit'][0]}")
+                    if n == 1:
+                        # Merton policy: constant pi* = clip(eta/v_lr, d, u)
+                        _eta = float(mkt.mu_ann[0]) - float(mkt.r)
+                        _v_lr = float(FD4D_PARAMS["theta_v"])
+                        _pi_m = float(np.clip(_eta / max(_v_lr, 1e-10),
+                                              cfg_gm.weight_lower_bound,
+                                              cfg_gm.weight_upper_bound))
+                        def _merton_policy_4d(w_norm, v, r, tau,
+                                              _pi=_pi_m):
+                            return np.full(np.asarray(w_norm).shape, _pi)
+                        from fd_4d_core import evaluate_policy_mc_4d as _ev4
+                        _mc_m = _ev4(
+                            policy_fn=_merton_policy_4d,
+                            mu=float(mkt.mu_ann[0]),
+                            r0=float(mkt.r),
+                            v0=float(FD4D_PARAMS["theta_v"]),
+                            T=T_horizon, w0=1.0, goal_mult=gm,
+                            **{k: FD4D_PARAMS[k] for k in (
+                                "kappa_v", "theta_v", "xi_v",
+                                "kappa_r", "theta_r", "xi_r",
+                                "rho_Wv",  "rho_Wr",  "rho_vr",
+                            )},
+                            n_paths=2000, n_steps=252, seed=0,
+                        )
+                        res = {**res,
+                               "mc_goal_prob":     _mc_m["goal_probability"],
+                               "mc_mean_wealth":   _mc_m["mean_wealth"],
+                               "mc_median_wealth": _mc_m["median_wealth"],
+                               "mc_wealth_p05":    _mc_m["wealth_p05"],
+                               "mc_wealth_p95":    _mc_m["wealth_p95"],
+                               "max_drawdown_mean":_mc_m["max_drawdown_mean"]}
+                    print(f"done  goal_hit={res['goal_hit'][0]}"
+                          + (f"  mc_P(goal)={res.get('mc_goal_prob', float('nan')):.3f}"
+                             if n == 1 else ""))
                     merton_cache[gm] = {**res, "n_assets": n, "goal_mult": gm}
 
         for seed in config.random_seeds:
@@ -737,12 +817,17 @@ def run_all(config, device=None, resume=False, compile_model=False):
                             if compile_model:
                                 _nn_kwargs["compile_model"] = True
                             res = eval_nn(mkt, cfg_gm, **_nn_kwargs)
-                            # MC evaluation under calibrated GBM (primary metric)
+                            # MC evaluation — stochastic vol for n=1, GBM for n>1
                             _pfn = _extract_policy_fn(res, mkt, cfg_gm)
                             if _pfn is not None:
-                                mc = _gbm_mc_eval(_pfn, mkt, 1.0, gm,
-                                                  n_mc=2000, seed=seed,
-                                                  T_horizon=T_horizon)
+                                if n == 1:
+                                    mc = _sv_mc_eval_n1(_pfn, mkt, gm,
+                                                        n_paths=2000, seed=seed,
+                                                        T_horizon=T_horizon)
+                                else:
+                                    mc = _gbm_mc_eval(_pfn, mkt, 1.0, gm,
+                                                      n_mc=2000, seed=seed,
+                                                      T_horizon=T_horizon)
                                 res = {**res, **mc}
                             elapsed = time.perf_counter() - t0
                             test_u  = res.get("test_u", float("nan"))
