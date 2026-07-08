@@ -977,11 +977,17 @@ def build_summary(results):
             wt_path = wt_path[:, None]
         goal    = r.get("target_wealth", 1.1)
 
+        # FD/MC-only methods have no historical path — use NaN sentinels
+        has_path     = len(wp) > 0
+        hist_term_w  = float(wp[-1])  if has_path else _nan
+        hist_sf      = float(max(goal - wp[-1], 0.0)) if has_path else _nan
+
         # Weight metrics
-        gross_lev  = np.abs(wt_path).sum(axis=1)
-        net_exp    = wt_path.sum(axis=1)
-        max_single = np.abs(wt_path).max(axis=1).mean()
-        turnover   = float(np.abs(np.diff(wt_path, axis=0)).sum()) if len(wt_path) > 1 else 0.0
+        has_wt     = len(wt_path) > 0
+        gross_lev  = np.abs(wt_path).sum(axis=1) if has_wt else np.array([0.0])
+        net_exp    = wt_path.sum(axis=1)          if has_wt else np.array([0.0])
+        max_single = float(np.abs(wt_path).max(axis=1).mean()) if has_wt else _nan
+        turnover   = float(np.abs(np.diff(wt_path, axis=0)).sum()) if has_wt and len(wt_path) > 1 else 0.0
 
         rows.append({
             # Identity
@@ -992,12 +998,12 @@ def build_summary(results):
             "goal_mult"            : float(r.get("goal_mult", 1.10)),
             # Historical backtest (single path — robustness check)
             "hist_goal_hit"        : bool(r["goal_hit"][0]),
-            "hist_terminal_wealth" : float(wp[-1]),
-            "hist_shortfall"       : float(max(goal - wp[-1], 0.0)),
+            "hist_terminal_wealth" : hist_term_w,
+            "hist_shortfall"       : hist_sf,
             "hist_max_drawdown"    : float(np.min(r.get("drawdown_path", [0]))),
             # Kept for backward compat with old plots
             "goal_probability"     : float(r.get("mc_goal_prob", float(r["goal_hit"][0]))),
-            "terminal_wealth"      : float(wp[-1]),
+            "terminal_wealth"      : hist_term_w,
             # MC primary metrics
             "mc_goal_prob"         : float(r.get("mc_goal_prob",      _nan)),
             "mc_goal_prob_ci_lo"   : float(r.get("mc_goal_prob_ci_lo", _nan)),
@@ -1015,7 +1021,7 @@ def build_summary(results):
             "mean_net_exposure"    : float(np.mean(net_exp)),
             "max_single_name_weight": float(max_single),
             "turnover"             : float(turnover),
-            "wealth_vol"           : float(np.std(np.diff(np.log(wp + 1e-8))) * np.sqrt(252)),
+            "wealth_vol"           : float(np.std(np.diff(np.log(wp + 1e-8))) * np.sqrt(252)) if has_path and len(wp) > 1 else _nan,
             # NN training
             "test_u"               : float(r.get("test_u", _nan)),
             "train_time_sec"       : float(r.get("train_time_sec", 0.0)),
