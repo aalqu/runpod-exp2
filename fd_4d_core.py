@@ -767,5 +767,5 @@ FD4D_PARAMS = dict(
     kappa_r = 0.50,   theta_r = 0.04,  xi_r = 0.10,
     rho_Wv  = -0.50,  rho_Wr  = 0.0,  rho_vr = 0.0,
     Nw = 80, Nv = 20, Nr = 15, Nt = 80,
-    v_max = 0.25,  r_max = 0.20,
+    A = 1.5, v_max = 0.25,  r_max = 0.20,
 )
