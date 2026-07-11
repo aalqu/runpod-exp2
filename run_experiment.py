@@ -112,9 +112,9 @@ def make_config(quick=False, no_nn=False, n_assets_list=None, seeds=None,
         # NN training
         include_nn        = not no_nn,
         nn_architectures  = nn_archs or _default_archs(include_grpo),
-        nn_paths          = 64  if quick else 256,
+        nn_paths          = 64  if quick else 128,
         nn_iters          = 10  if quick else 200,
-        nn_steps          = 16  if quick else 40,
+        nn_steps          = 16  if quick else 32,
         nn_pretrain_iters = 0,   # pretrain does nothing — always 0
         nn_antithetic     = True,
         nn_p_curriculum   = 0.30,
@@ -122,11 +122,11 @@ def make_config(quick=False, no_nn=False, n_assets_list=None, seeds=None,
         nn_horizon_years  = 1.0,
 
         # ES-GRPO hyper-params (used when include_grpo=True)
-        es_grpo_G        = 16 if quick else 16,
+        es_grpo_G        = 16 if quick else 8,
         es_grpo_sigma    = 0.030,
         es_grpo_lr       = 3e-3,
         es_grpo_iters    = 10 if quick else 300,
-        es_grpo_paths    = 32 if quick else 128,
+        es_grpo_paths    = 32 if quick else 64,
         es_grpo_pretrain = 0  if quick else 100,
         es_grpo_patience = 30 if quick else 60,
 
@@ -942,6 +942,13 @@ def run_all(config, device=None, resume=False, compile_model=False):
                             print(f"FAILED: {exc}")
                             if not resume:
                                 traceback.print_exc()
+                        finally:
+                            try:
+                                import torch
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                            except Exception:
+                                pass
 
     return results, histories
 
