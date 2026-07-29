@@ -112,9 +112,9 @@ def make_config(quick=False, no_nn=False, n_assets_list=None, seeds=None,
         # NN training
         include_nn        = not no_nn,
         nn_architectures  = nn_archs or _default_archs(include_grpo),
-        nn_paths          = 64  if quick else 64,
+        nn_paths          = 32  if quick else 32,
         nn_iters          = 10  if quick else 200,
-        nn_steps          = 16  if quick else 32,
+        nn_steps          = 16  if quick else 16,
         nn_pretrain_iters = 0,   # pretrain does nothing — always 0
         nn_antithetic     = True,
         nn_p_curriculum   = 0.30,

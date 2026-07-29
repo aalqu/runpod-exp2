@@ -14,7 +14,7 @@ echo "============================================================"
 
 python3 run_experiment.py \
     --n-assets    1 \
-    --seeds       1,2,3 \
+    --seeds       1 \
     --results-dir results/gpu0 \
     --device      cuda \
     --resume \
