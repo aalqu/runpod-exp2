@@ -564,12 +564,51 @@ def _save_ckpt(results_dir, res, n, seed, gm):
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
-        method_name   = np.array(res["method_name"]),
-        goal_hit      = np.array(res["goal_hit"]),
-        wealth_path   = np.array(res.get("wealth_path", [])),
-        train_time    = np.array(res.get("train_time_sec", 0.0)),
-        solve_time    = np.array(res.get("solve_time_sec", 0.0)),
+        method_name    = np.array(res["method_name"]),
+        method_family  = np.array(res.get("method_family", "nn")),
+        goal_hit       = np.array(res["goal_hit"]),
+        wealth_path    = np.array(res.get("wealth_path", [])),
+        weight_path    = np.array(res.get("weight_path", [])),
+        drawdown_path  = np.array(res.get("drawdown_path", [])),
+        train_time     = np.array(res.get("train_time_sec", 0.0)),
+        solve_time     = np.array(res.get("solve_time_sec", 0.0)),
+        mc_goal_prob   = np.array(res.get("mc_goal_prob", float("nan"))),
+        mc_mean_wealth = np.array(res.get("mc_mean_wealth", float("nan"))),
+        mc_median_wealth = np.array(res.get("mc_median_wealth", float("nan"))),
+        mc_wealth_p05  = np.array(res.get("mc_wealth_p05", float("nan"))),
+        mc_wealth_p95  = np.array(res.get("mc_wealth_p95", float("nan"))),
+        mc_shortfall_mean = np.array(res.get("mc_shortfall_mean", float("nan"))),
+        mc_mean_gross_leverage = np.array(res.get("mc_mean_gross_leverage", float("nan"))),
     )
+
+
+def _load_ckpt(results_dir, method, n, seed, gm):
+    """Reload a lightweight result dict from a checkpoint file."""
+    path = _ckpt_path(results_dir, method, n, seed, gm)
+    d = np.load(path, allow_pickle=True)
+    return {
+        "method_name":    str(d["method_name"]),
+        "method_family":  str(d["method_family"]) if "method_family" in d else "nn",
+        "method":         str(d["method_name"]),
+        "n_assets":       n,
+        "seed":           seed,
+        "goal_mult":      gm,
+        "target_wealth":  gm,
+        "initial_wealth": 1.0,
+        "goal_hit":       d["goal_hit"],
+        "wealth_path":    d["wealth_path"],
+        "weight_path":    d["weight_path"] if "weight_path" in d else np.array([]),
+        "drawdown_path":  d["drawdown_path"] if "drawdown_path" in d else np.array([]),
+        "train_time_sec": float(d["train_time"]),
+        "solve_time_sec": float(d["solve_time"]),
+        "mc_goal_prob":   float(d["mc_goal_prob"])   if "mc_goal_prob"   in d else float("nan"),
+        "mc_mean_wealth": float(d["mc_mean_wealth"]) if "mc_mean_wealth" in d else float("nan"),
+        "mc_median_wealth": float(d["mc_median_wealth"]) if "mc_median_wealth" in d else float("nan"),
+        "mc_wealth_p05":  float(d["mc_wealth_p05"])  if "mc_wealth_p05"  in d else float("nan"),
+        "mc_wealth_p95":  float(d["mc_wealth_p95"])  if "mc_wealth_p95"  in d else float("nan"),
+        "mc_shortfall_mean": float(d["mc_shortfall_mean"]) if "mc_shortfall_mean" in d else float("nan"),
+        "mc_mean_gross_leverage": float(d["mc_mean_gross_leverage"]) if "mc_mean_gross_leverage" in d else float("nan"),
+    }
 
 
 def run_all(config, device=None, resume=False, compile_model=False):
@@ -643,6 +682,10 @@ def run_all(config, device=None, resume=False, compile_model=False):
                 _ck = _ckpt_path(config.results_dir, "fd_nd", n, 0, gm)
                 if resume and _ck.exists():
                     print(f"  [FD n={n} goal={gm:.2f}] skipped (checkpoint exists)")
+                    try:
+                        fd_cache[gm] = _load_ckpt(config.results_dir, "fd_nd", n, 0, gm)
+                    except Exception:
+                        pass
                 else:
                     print(f"  [FD n={n} goal={gm:.2f}] solving HJB ...", end=" ", flush=True)
                     t0  = time.perf_counter()
@@ -823,6 +866,10 @@ def run_all(config, device=None, resume=False, compile_model=False):
                 _ck = _ckpt_path(config.results_dir, "merton", n, 0, gm)
                 if resume and _ck.exists():
                     print(f"  [Merton n={n} goal={gm:.2f}] skipped (checkpoint exists)")
+                    try:
+                        merton_cache[gm] = _load_ckpt(config.results_dir, "merton", n, 0, gm)
+                    except Exception:
+                        pass
                 else:
                     print(f"  [Merton n={n} goal={gm:.2f}] ...", end=" ", flush=True)
                     res = eval_merton(mkt, cfg_gm, initial_wealth=1.0, seed=0)
@@ -895,6 +942,10 @@ def run_all(config, device=None, resume=False, compile_model=False):
                         _ck = _ckpt_path(config.results_dir, arch, n, seed, gm)
                         if resume and _ck.exists():
                             print(f"    [{arch} goal={gm:.2f}] skipped (checkpoint exists)")
+                            try:
+                                results.append(_load_ckpt(config.results_dir, arch, n, seed, gm))
+                            except Exception:
+                                pass
                             continue
                         print(f"    [{arch} goal={gm:.2f}] training ...", end=" ", flush=True)
                         t0 = time.perf_counter()
@@ -1235,15 +1286,17 @@ def compute_effect_size_table(df, n_bootstrap: int = 2000, rng_seed: int = 0):
     rows = []
 
     for (n, T), grp in df.groupby(["n_assets", "T_horizon"]):
-        windows = sorted(grp["window_idx"].unique()) if "window_idx" in grp.columns \
-                  else [0]
+        # Ensure window_idx exists so unstack always operates on a MultiIndex
+        if "window_idx" not in grp.columns:
+            grp = grp.copy()
+            grp["window_idx"] = 0
+        windows = sorted(grp["window_idx"].unique())
 
         # Per-window, per-method mean across seeds
         pivot = (
-            grp.groupby(["method", "window_idx"] if "window_idx" in grp.columns
-                        else ["method"])[mc_col]
+            grp.groupby(["method", "window_idx"])[mc_col]
             .mean()
-            .unstack("window_idx" if "window_idx" in grp.columns else "method")
+            .unstack("window_idx")
         )
 
         # FD reference row (fd_nd)
