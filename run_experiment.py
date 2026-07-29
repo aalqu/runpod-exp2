@@ -1007,7 +1007,7 @@ def build_summary(results):
             "hist_goal_hit"        : bool(r["goal_hit"][0]),
             "hist_terminal_wealth" : hist_term_w,
             "hist_shortfall"       : hist_sf,
-            "hist_max_drawdown"    : float(np.min(r.get("drawdown_path", [0]))),
+            "hist_max_drawdown"    : float(np.min(r["drawdown_path"]) if len(r.get("drawdown_path", [])) > 0 else 0.0),
             # Kept for backward compat with old plots
             "goal_probability"     : float(r.get("mc_goal_prob", float(r["goal_hit"][0]))),
             "terminal_wealth"      : hist_term_w,
