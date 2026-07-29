@@ -462,7 +462,9 @@ def _sv_mc_eval_n1(policy_fn_2d, mkt, gm, n_paths=2000, seed=42, T_horizon=1.0):
     from fd_4d_core import evaluate_policy_mc_4d
 
     def _policy_4d(w_norm, v, r, tau):
-        return policy_fn_2d(w_norm, tau)
+        raw = np.asarray(policy_fn_2d(w_norm, tau), dtype=float)
+        # nn_policy returns (n_paths, 1) for n=1; evaluate_policy_mc_4d needs (n_paths,)
+        return raw.reshape(-1)
 
     mu_1 = float(mkt.mu_ann[0])
     r0   = float(mkt.r)

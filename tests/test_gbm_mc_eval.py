@@ -1,8 +1,10 @@
 """
-TDD tests for _gbm_mc_eval and the nn_policy batch-inference path.
+TDD tests for _gbm_mc_eval / _sv_mc_eval_n1 and the nn_policy batch-inference path.
 
-Covers the shape-mismatch bug reported for n_assets=5:
-  "operands could not be broadcast together with shapes (2000,2000) (4000000,2000)"
+Covers the shape-mismatch bugs:
+  - _gbm_mc_eval n=5: policy returns (n_mc,5) correctly
+  - _sv_mc_eval_n1 n=1: nn_policy returned (n_paths,1); evaluate_policy_mc_4d
+    needs (n_paths,) — the column vector caused (2000,1)*(2000,) → (2000,2000)
 """
 import sys
 from pathlib import Path
@@ -11,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from run_experiment import _gbm_mc_eval, _extract_policy_fn, make_config
+from run_experiment import _gbm_mc_eval, _sv_mc_eval_n1, _extract_policy_fn, make_config
 
 
 class _FakeMarketData:
@@ -183,3 +185,83 @@ def test_gbm_mc_eval_n5_lstm():
 
 def test_gbm_mc_eval_n5_transformer():
     _run_arch_n5("transformer")
+
+
+# ── _sv_mc_eval_n1 tests (n=1 stochastic-vol path) ───────────────────────────
+
+def _run_sv_arch_n1(arch_name):
+    """
+    Train a tiny n=1 model for arch_name, extract policy, run _sv_mc_eval_n1.
+    Reproduces the (2000,1)*(2000,) → (2000,2000) broadcast bug for n=1.
+    """
+    from comparisons.core.torch_nn_models import train_torch_policy_net
+
+    n_assets = 1
+    mkt      = _FakeMarketData(n_assets)
+    cfg      = make_config(quick=True)
+
+    train_kwargs = dict(
+        mu_vec=mkt.mu_ann, omega_mat=mkt.omega, r=mkt.r,
+        architecture_name=arch_name,
+        w0=1.0, goal_mult=1.10,
+        n_paths=16, n_iters=5, n_steps=8,
+        pretrain_iters=0, patience=9999, seed=1,
+    )
+    if arch_name == 'nn_historical_replay':
+        train_kwargs['historical_returns'] = np.exp(mkt.log_ret) - 1.0
+
+    net, _ = train_torch_policy_net(**train_kwargs)
+
+    fake_result = {
+        "method_family": "nn",
+        "n_assets": n_assets,
+        "target_wealth": 1.10,
+        "_model_artifact": {"model": net, "metadata": {"n_steps": 8}},
+    }
+
+    pfn = _extract_policy_fn(fake_result, mkt, cfg)
+    assert pfn is not None, f"_extract_policy_fn returned None for {arch_name}"
+
+    mc = _sv_mc_eval_n1(pfn, mkt, 1.10, n_paths=200, seed=0)
+    assert "mc_goal_prob" in mc, f"{arch_name}: missing mc_goal_prob"
+    assert 0.0 <= mc["mc_goal_prob"] <= 1.0, f"{arch_name}: goal_prob out of range"
+
+
+def test_sv_mc_eval_n1_mlp_small():
+    _run_sv_arch_n1("nn_mlp_small")
+
+
+def test_sv_mc_eval_n1_mlp_deep():
+    _run_sv_arch_n1("nn_mlp_deep")
+
+
+def test_sv_mc_eval_n1_policy_net():
+    _run_sv_arch_n1("nn_policy_net")
+
+
+def test_sv_mc_eval_n1_ste_goalreach():
+    _run_sv_arch_n1("nn_ste_goalreach")
+
+
+def test_sv_mc_eval_n1_policy_long_only():
+    _run_sv_arch_n1("nn_policy_long_only")
+
+
+def test_sv_mc_eval_n1_historical_replay():
+    _run_sv_arch_n1("nn_historical_replay")
+
+
+def test_sv_mc_eval_n1_deep_bsde():
+    _run_sv_arch_n1("deep_bsde")
+
+
+def test_sv_mc_eval_n1_actor_critic():
+    _run_sv_arch_n1("actor_critic")
+
+
+def test_sv_mc_eval_n1_lstm():
+    _run_sv_arch_n1("lstm")
+
+
+def test_sv_mc_eval_n1_transformer():
+    _run_sv_arch_n1("transformer")
