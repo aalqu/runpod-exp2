@@ -33,6 +33,17 @@ import time
 import warnings
 from pathlib import Path
 
+# Limit CPU threads before importing torch/numpy to prevent MKL/OpenMP
+# from pre-allocating thread buffers proportional to host RAM.
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
+try:
+    import torch
+    torch.set_num_threads(2)
+except ImportError:
+    pass
+
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
