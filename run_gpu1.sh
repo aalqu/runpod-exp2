@@ -6,6 +6,9 @@ set -euo pipefail
 mkdir -p logs results/gpu1
 
 export CUDA_VISIBLE_DEVICES=1
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
 
 echo "============================================================"
 echo "  GPU 1  |  n_assets=5  |  $(date)"
