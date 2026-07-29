@@ -15,7 +15,6 @@ python3 run_experiment.py \
     --n-assets    5 \
     --seeds       1,2,3 \
     --results-dir results/gpu1 \
-    --include-grpo \
     --device      cuda \
     --resume \
     2>&1 | tee logs/gpu1.log
