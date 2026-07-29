@@ -711,6 +711,10 @@ def run_all(config, device=None, resume=False, compile_model=False):
                 _ck = _ckpt_path(config.results_dir, "fd_sv", n, 0, gm)
                 if resume and _ck.exists():
                     print(f"  [fd_sv n={n} goal={gm:.2f}] skipped (checkpoint exists)")
+                    try:
+                        fd_sv_cache[gm] = _load_ckpt(config.results_dir, "fd_sv", n, 0, gm)
+                    except Exception:
+                        pass
                 else:
                     print(f"  [fd_sv n={n} goal={gm:.2f}] solving 4D HJB ...",
                           end=" ", flush=True)
@@ -787,6 +791,10 @@ def run_all(config, device=None, resume=False, compile_model=False):
                 _ck = _ckpt_path(config.results_dir, "fd_sv_nd", n, 0, gm)
                 if resume and _ck.exists():
                     print(f"  [fd_sv_nd n={n} goal={gm:.2f}] skipped (checkpoint exists)")
+                    try:
+                        fd_sv_nd_cache[gm] = _load_ckpt(config.results_dir, "fd_sv_nd", n, 0, gm)
+                    except Exception:
+                        pass
                 else:
                     print(f"  [fd_sv_nd n={n} goal={gm:.2f}] solving 4D HJB (factor vol) ...",
                           end=" ", flush=True)
