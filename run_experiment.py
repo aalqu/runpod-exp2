@@ -56,7 +56,6 @@ _BASE_ARCHS = [
     "nn_mlp_deep",
     "nn_policy_net",
     "nn_ste_goalreach",
-    "nn_digital_hedge",
     "nn_policy_long_only",
     "nn_historical_replay",
     "deep_bsde",
@@ -933,7 +932,8 @@ def run_all(config, device=None, resume=False, compile_model=False):
                                 traceback.print_exc()
                         finally:
                             try:
-                                import torch
+                                import gc, torch
+                                gc.collect()
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
                             except Exception:
