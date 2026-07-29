@@ -53,27 +53,16 @@ RESULTS_DIR = ROOT / "results" / "experiment"
 
 _BASE_ARCHS = [
     "nn_mlp_small",
-    "nn_mlp_small_v2",
     "nn_mlp_deep",
     "nn_policy_net",
-    "nn_policy_net_v2",
     "nn_ste_goalreach",
-    "nn_ste_goalreach_v2",
     "nn_digital_hedge",
     "nn_policy_long_only",
-    "nn_ste_long_only",
-    "nn_digital_hedge_long_only",
     "nn_historical_replay",
-    "nn_historical_replay_long_only",
     "deep_bsde",
-    "deep_bsde_v2",
-    "pinn",
     "actor_critic",
-    "actor_critic_v2",
     "lstm",
-    "lstm_v2",
     "transformer",
-    "transformer_v2",
 ]
 
 _GRPO_ARCHS = ["es_grpo", "es_grpo_long_only"]

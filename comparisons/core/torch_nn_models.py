@@ -474,70 +474,51 @@ def build_empirical_cdf_lookup(
 TORCH_ARCHITECTURES: Dict[str, Dict[str, object]] = {
     'nn_mlp_small': {'kind': 'mlp', 'hidden_layers': (32, 32)},
     'nn_mlp_deep': {'kind': 'mlp', 'hidden_layers': (64, 64, 32)},
-    'nn_policy_net': {'kind': 'mlp', 'hidden_layers': (128, 128, 128)},
-    'deep_bsde': {'kind': 'deep_bsde', 'hidden_layers': (32, 32), 'n_iters_min': 500},
-    'pinn': {'kind': 'pinn', 'hidden_layers': (64, 64)},
-    'actor_critic': {'kind': 'actor_critic', 'hidden_layers': (64, 64)},
-    'lstm': {'kind': 'lstm', 'hidden_size': 32, 'seq_len': 8},
-    'transformer': {'kind': 'transformer', 'd_model': 32, 'nhead': 4, 'seq_len': 8,
-                    'n_iters_min': 500},
-    # ── STE variant ──────────────────────────────────────────────────────────
-    # Same capacity as nn_policy_net but trained with the exact step-function
-    # objective via a Straight-Through Estimator, matching the fd_nd terminal
-    # condition 1{W_T >= goal} instead of the sigmoid approximation.
-    'nn_ste_goalreach': {'kind': 'mlp', 'hidden_layers': (128, 128, 128),
+    'nn_policy_net': {'kind': 'mlp', 'hidden_layers': (64, 64)},
+    'deep_bsde': {'kind': 'deep_bsde', 'hidden_layers': (32, 32), 'n_iters_min': 200},
+    'pinn': {'kind': 'pinn', 'hidden_layers': (32, 32)},
+    'actor_critic': {'kind': 'actor_critic', 'hidden_layers': (32, 32)},
+    'lstm': {'kind': 'lstm', 'hidden_size': 16, 'seq_len': 8},
+    'transformer': {'kind': 'transformer', 'd_model': 16, 'nhead': 2, 'seq_len': 8,
+                    'n_iters_min': 200},
+    'nn_ste_goalreach': {'kind': 'mlp', 'hidden_layers': (64, 64),
                          'utility': 'goalreach_ste'},
-    # ── Digital-option delta-hedge variant ───────────────────────────────────
-    # Value network V(w,τ) frames the problem as pricing a digital call option.
-    # Policy = multi-asset delta hedge -(V_w/(w·V_ww))·Ω⁻¹η via autograd.
-    # Three-phase training: supervised Browne → Kolmogorov PDE residual → path BCE.
-    'nn_digital_hedge': {'kind': 'digital_hedge', 'hidden_layers': (128, 128, 128)},
-    # ── Long-only variants ────────────────────────────────────────────────────
-    # All weights ≥ 0, total long exposure ≤ 100%, no shorting.
-    # Constraints: per-asset [0, 1], max_long=1, max_short=0.
-    # Direct comparison with the leveraged counterparts above.
+    'nn_digital_hedge': {'kind': 'digital_hedge', 'hidden_layers': (64, 64)},
     'nn_policy_long_only': {
-        'kind': 'mlp', 'hidden_layers': (128, 128, 128),
+        'kind': 'mlp', 'hidden_layers': (64, 64),
         'constraints': {'d': 0.0, 'u': 1.0, 'max_long': 1.0, 'max_short': 0.0},
     },
     'nn_ste_long_only': {
-        'kind': 'mlp', 'hidden_layers': (128, 128, 128),
+        'kind': 'mlp', 'hidden_layers': (64, 64),
         'utility': 'goalreach_ste',
         'constraints': {'d': 0.0, 'u': 1.0, 'max_long': 1.0, 'max_short': 0.0},
     },
     'nn_digital_hedge_long_only': {
-        'kind': 'digital_hedge', 'hidden_layers': (128, 128, 128),
+        'kind': 'digital_hedge', 'hidden_layers': (64, 64),
         'constraints': {'d': 0.0, 'u': 1.0, 'max_long': 1.0, 'max_short': 0.0},
     },
-    # ── Historical-replay architecture ────────────────────────────────────────
-    # Trained directly on real return sequences (block bootstrap) rather than
-    # GBM simulations.  Uses RICH_FEATURE_DIM=5 inputs so the network can
-    # condition on recent volatility and momentum in addition to (w/goal, τ).
-    # Train/val/test are time-ordered splits of the actual historical dataset.
     'nn_historical_replay': {
         'kind': 'historical_replay',
-        'hidden_layers': (128, 128, 128),
+        'hidden_layers': (64, 64),
         'n_features': RICH_FEATURE_DIM,
     },
-    # ── v2 enriched-feature variants (§3.2 of NN_FEATURE_REDESIGN.md) ──────────
-    # These run the full 13+5n enriched feature stack. v1 names remain unchanged.
-    'nn_mlp_small_v2':     {'kind': 'mlp',          'hidden_layers': (64, 64),
+    'nn_mlp_small_v2':     {'kind': 'mlp',          'hidden_layers': (32, 32),
                              'feature_set': 'enriched'},
-    'nn_policy_net_v2':    {'kind': 'mlp',          'hidden_layers': (128, 128, 128),
+    'nn_policy_net_v2':    {'kind': 'mlp',          'hidden_layers': (64, 64),
                              'feature_set': 'enriched'},
-    'nn_ste_goalreach_v2': {'kind': 'mlp',          'hidden_layers': (128, 128, 128),
+    'nn_ste_goalreach_v2': {'kind': 'mlp',          'hidden_layers': (64, 64),
                              'utility': 'goalreach_ste', 'feature_set': 'enriched'},
     'deep_bsde_v2':        {'kind': 'deep_bsde',    'hidden_layers': (32, 32),
                              'feature_set': 'enriched'},
-    'actor_critic_v2':     {'kind': 'actor_critic', 'hidden_layers': (64, 64),
+    'actor_critic_v2':     {'kind': 'actor_critic', 'hidden_layers': (32, 32),
                              'feature_set': 'enriched'},
-    'lstm_v2':             {'kind': 'lstm',         'hidden_size': 64, 'seq_len': 20,
+    'lstm_v2':             {'kind': 'lstm',         'hidden_size': 16, 'seq_len': 8,
                              'feature_set': 'enriched'},
-    'transformer_v2':      {'kind': 'transformer',  'd_model': 64, 'nhead': 4,
-                             'seq_len': 20, 'feature_set': 'enriched'},
+    'transformer_v2':      {'kind': 'transformer',  'd_model': 16, 'nhead': 2,
+                             'seq_len': 8, 'feature_set': 'enriched'},
     'nn_historical_replay_long_only': {
         'kind': 'historical_replay',
-        'hidden_layers': (128, 128, 128),
+        'hidden_layers': (64, 64),
         'n_features': RICH_FEATURE_DIM,
         'constraints': {'d': 0.0, 'u': 1.0, 'max_long': 1.0, 'max_short': 0.0},
     },
