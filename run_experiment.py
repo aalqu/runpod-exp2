@@ -413,6 +413,13 @@ def _gbm_mc_eval(policy_fn, market_data, initial_wealth, target_multiplier,
         tau    = (days - t) * dt                          # scalar, same for all paths
         w_norm = W_batch / goal                           # (n_mc,)
         pi     = np.asarray(policy_fn(w_norm, tau), dtype=float)
+        if pi.size != n_mc * n:
+            raise ValueError(
+                f"_gbm_mc_eval: policy_fn returned array of size {pi.size} "
+                f"but expected {n_mc * n} (n_mc={n_mc}, n_assets={n}). "
+                f"Returned shape={pi.shape}. "
+                f"Check that the model n_assets matches market_data.n."
+            )
         pi     = pi.reshape(n_mc, n)                      # (n_mc, n)
         all_weights[:, t, :] = pi
         gross  = np.exp(log_ret_mat[:, t, :]) - 1.0      # (n_mc, n)
@@ -939,8 +946,7 @@ def run_all(config, device=None, resume=False, compile_model=False):
                         except Exception as exc:
                             import traceback
                             print(f"FAILED: {exc}")
-                            if not resume:
-                                traceback.print_exc()
+                            traceback.print_exc()
                         finally:
                             try:
                                 import gc, torch
