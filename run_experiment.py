@@ -758,6 +758,24 @@ def run_all(config, device=None, resume=False, compile_model=False):
                         elapsed_sv = time.perf_counter() - t0
                         print(f"done ({elapsed_sv:.1f}s)  "
                               f"mc_P(goal)={mc_sv['goal_probability']:.3f}")
+                        # Historical backtest: fix v=theta_v, r=r0_sv at long-run equilibrium
+                        from backtest_core import run_backtest_1d as _bt1d
+                        from comparisons.core.metrics import compute_drawdown_series as _cdd
+                        _bt_log_ret_sv = eval_mkt.log_ret[:, 0]
+                        _theta_v_sv    = float(FD4D_PARAMS["theta_v"])
+                        _wealth_sv, _pi_sv = _bt1d(
+                            log_returns=_bt_log_ret_sv,
+                            r_daily=r0_sv / 252.0,
+                            strategy_fn=lambda w, tau, _pol=policy_sv,
+                                               _v=_theta_v_sv, _r=r0_sv, _g=gm:
+                                float(_pol(w / _g, _v, _r, tau)[0]),
+                            strategy_kwargs={},
+                            T_horizon=T_horizon,
+                            W0=1.0,
+                            d=config.weight_lower_bound,
+                            u=config.weight_upper_bound,
+                        )
+                        _dd_sv = _cdd(_wealth_sv)
                         res_sv = dict(
                             method_family       = "fd",
                             method_name         = "fd_sv",
@@ -783,14 +801,15 @@ def run_all(config, device=None, resume=False, compile_model=False):
                             mc_mean_gross_leverage = float("nan"),
                             initial_wealth      = 1.0,
                             target_wealth       = gm,
-                            wealth_path         = [],
-                            weight_path         = [],
-                            terminal_wealth     = [],
-                            goal_hit            = [mc_sv["goal_probability"] >= 0.5],
-                            gross_leverage_path = [],
-                            net_exposure_path   = [],
-                            concentration_path  = [],
-                            drawdown_path       = [],
+                            tickers             = list(mkt.tickers),
+                            wealth_path         = _wealth_sv,
+                            weight_path         = _pi_sv[:, None],
+                            terminal_wealth     = np.array([_wealth_sv[-1]]),
+                            goal_hit            = np.array([_wealth_sv[-1] >= gm]),
+                            gross_leverage_path = np.abs(_pi_sv),
+                            net_exposure_path   = _pi_sv,
+                            concentration_path  = _pi_sv ** 2,
+                            drawdown_path       = _dd_sv,
                         )
                         fd_sv_cache[gm] = res_sv
                         _save_ckpt(config.results_dir, res_sv, n, 0, gm)
@@ -847,6 +866,25 @@ def run_all(config, device=None, resume=False, compile_model=False):
                         elapsed_nd = time.perf_counter() - t0
                         print(f"done ({elapsed_nd:.1f}s)  "
                               f"mc_P(goal)={mc_nd['goal_probability']:.3f}")
+                        # Historical backtest: fix v=theta_v, r=r0_nd at long-run equilibrium
+                        from comparisons.core.metrics import compute_drawdown_series as _cdd_nd
+                        _bt_log_ret_nd = eval_mkt.log_ret        # (T, n)
+                        _T_nd          = len(_bt_log_ret_nd)
+                        _theta_v_nd    = float(FD4D_PARAMS["theta_v"])
+                        _r_daily_nd    = r0_nd / 252.0
+                        _wealth_nd     = np.zeros(_T_nd + 1); _wealth_nd[0] = 1.0
+                        _pi_nd         = np.zeros((_T_nd, n))
+                        for _t in range(_T_nd):
+                            _tau_nd     = max(T_horizon - _t / 252.0, 1.0 / 252.0)
+                            _w_norm_nd  = _wealth_nd[_t] / gm
+                            _pi_t       = policy_sv_nd(_w_norm_nd, _theta_v_nd, r0_nd, _tau_nd)
+                            _pi_t       = np.clip(_pi_t[0], config.weight_lower_bound,
+                                                  config.weight_upper_bound)
+                            _pi_nd[_t]  = _pi_t
+                            _gret_nd    = np.exp(_bt_log_ret_nd[_t]) - 1.0
+                            _port_nd    = _r_daily_nd + float(_pi_t @ (_gret_nd - _r_daily_nd))
+                            _wealth_nd[_t + 1] = max(_wealth_nd[_t] * (1.0 + _port_nd), 1e-6)
+                        _dd_nd = _cdd_nd(_wealth_nd)
                         res_sv_nd = dict(
                             method_family       = "fd",
                             method_name         = "fd_sv_nd",
@@ -872,14 +910,15 @@ def run_all(config, device=None, resume=False, compile_model=False):
                             mc_mean_gross_leverage = float("nan"),
                             initial_wealth      = 1.0,
                             target_wealth       = gm,
-                            wealth_path         = [],
-                            weight_path         = [],
-                            terminal_wealth     = [],
-                            goal_hit            = [mc_nd["goal_probability"] >= 0.5],
-                            gross_leverage_path = [],
-                            net_exposure_path   = [],
-                            concentration_path  = [],
-                            drawdown_path       = [],
+                            tickers             = list(mkt.tickers),
+                            wealth_path         = _wealth_nd,
+                            weight_path         = _pi_nd,
+                            terminal_wealth     = np.array([_wealth_nd[-1]]),
+                            goal_hit            = np.array([_wealth_nd[-1] >= gm]),
+                            gross_leverage_path = np.abs(_pi_nd).sum(axis=1),
+                            net_exposure_path   = _pi_nd.sum(axis=1),
+                            concentration_path  = (_pi_nd ** 2).sum(axis=1),
+                            drawdown_path       = _dd_nd,
                         )
                         fd_sv_nd_cache[gm] = res_sv_nd
                         _save_ckpt(config.results_dir, res_sv_nd, n, 0, gm)
@@ -943,23 +982,24 @@ def run_all(config, device=None, resume=False, compile_model=False):
                 cfg_gm.target_multiplier = gm
 
                 # Stamp cached FD/Merton/fd_sv results with this seed (shallow copy)
+                _tickers = list(mkt.tickers)
                 if gm in fd_cache:
-                    res_fd = {**fd_cache[gm], "seed": seed}
+                    res_fd = {**fd_cache[gm], "seed": seed, "tickers": _tickers}
                     results.append(res_fd)
                     _save_ckpt(config.results_dir, res_fd, n, seed, gm)
 
                 if gm in fd_sv_cache:
-                    res_sv_s = {**fd_sv_cache[gm], "seed": seed}
+                    res_sv_s = {**fd_sv_cache[gm], "seed": seed, "tickers": _tickers}
                     results.append(res_sv_s)
                     _save_ckpt(config.results_dir, res_sv_s, n, seed, gm)
 
                 if gm in fd_sv_nd_cache:
-                    res_sv_nd_s = {**fd_sv_nd_cache[gm], "seed": seed}
+                    res_sv_nd_s = {**fd_sv_nd_cache[gm], "seed": seed, "tickers": _tickers}
                     results.append(res_sv_nd_s)
                     _save_ckpt(config.results_dir, res_sv_nd_s, n, seed, gm)
 
                 if gm in merton_cache:
-                    res_m = {**merton_cache[gm], "seed": seed}
+                    res_m = {**merton_cache[gm], "seed": seed, "tickers": _tickers}
                     results.append(res_m)
                     _save_ckpt(config.results_dir, res_m, n, seed, gm)
 
@@ -969,7 +1009,9 @@ def run_all(config, device=None, resume=False, compile_model=False):
                         if resume and _ck.exists():
                             print(f"    [{arch} goal={gm:.2f}] skipped (checkpoint exists)")
                             try:
-                                results.append(_load_ckpt(config.results_dir, arch, n, seed, gm))
+                                _r = _load_ckpt(config.results_dir, arch, n, seed, gm)
+                                _r["tickers"] = _tickers
+                                results.append(_r)
                             except Exception:
                                 pass
                             continue
