@@ -87,8 +87,12 @@ def _default_archs(include_grpo: bool = False) -> list:
 
 
 def make_config(quick=False, no_nn=False, n_assets_list=None, seeds=None,
-                nn_archs=None, include_grpo=False, in_sample=False):
-    """Build a BenchmarkConfig with sensible defaults."""
+                nn_archs=None, include_grpo=False, in_sample=False, long=False):
+    """Build a BenchmarkConfig with sensible defaults.
+
+    long=True bumps NN training ~50x: 300 iters, 256 paths, 64 steps.
+    Use for production runs; default (50/32/16) is a quick sanity check.
+    """
     from comparisons.core.config import BenchmarkConfig
 
     return BenchmarkConfig(
@@ -111,23 +115,23 @@ def make_config(quick=False, no_nn=False, n_assets_list=None, seeds=None,
         # NN training
         include_nn        = not no_nn,
         nn_architectures  = nn_archs or _default_archs(include_grpo),
-        nn_paths          = 32  if quick else 32,
-        nn_iters          = 10  if quick else 50,
-        nn_steps          = 16  if quick else 16,
+        nn_paths          = 32  if quick else (256 if long else 32),
+        nn_iters          = 10  if quick else (300 if long else 50),
+        nn_steps          = 16  if quick else (64  if long else 16),
         nn_pretrain_iters = 0,   # pretrain does nothing — always 0
         nn_antithetic     = True,
         nn_p_curriculum   = 0.30,
-        nn_patience       = 30  if quick else 60,
+        nn_patience       = 30  if quick else (100 if long else 60),
         nn_horizon_years  = 1.0,
 
         # ES-GRPO hyper-params (used when include_grpo=True)
-        es_grpo_G        = 16 if quick else 8,
+        es_grpo_G        = 16 if quick else (32  if long else 8),
         es_grpo_sigma    = 0.030,
         es_grpo_lr       = 3e-3,
-        es_grpo_iters    = 10 if quick else 300,
-        es_grpo_paths    = 32 if quick else 64,
-        es_grpo_pretrain = 0  if quick else 100,
-        es_grpo_patience = 30 if quick else 60,
+        es_grpo_iters    = 10 if quick else (600 if long else 300),
+        es_grpo_paths    = 32 if quick else (256 if long else 64),
+        es_grpo_pretrain = 0  if quick else (200 if long else 100),
+        es_grpo_patience = 30 if quick else (100 if long else 60),
 
         # Leverage
         weight_lower_bound = -5.0,
@@ -2164,6 +2168,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run FD vs NN portfolio experiment")
     parser.add_argument("--quick",    action="store_true",
                         help="fast sanity check (scaled-down iters)")
+    parser.add_argument("--long",     action="store_true",
+                        help="full training: 300 iters, 256 paths, 64 steps (~50x default)")
     parser.add_argument("--no-nn",   action="store_true",
                         help="skip NN training, FD and baselines only")
     parser.add_argument("--n-assets", default=None,
@@ -2322,6 +2328,7 @@ def main():
 
     config = make_config(
         quick         = args.quick,
+        long          = args.long,
         no_nn         = args.no_nn,
         n_assets_list = n_assets_list,
         seeds         = seeds,
